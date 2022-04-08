@@ -13,6 +13,8 @@
  */
 package io.trino.plugin.bigquery;
 
+import com.google.cloud.bigquery.FieldValue;
+import com.google.cloud.bigquery.TableResult;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.testing.BaseConnectorTest;
@@ -25,15 +27,19 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static com.google.common.base.Strings.nullToEmpty;
+import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.bigquery.BigQueryQueryRunner.BigQuerySqlExecutor;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.assertions.Assert.assertEquals;
 import static io.trino.testing.sql.TestTable.randomTableSuffix;
 import static java.lang.String.format;
+import static java.time.format.DateTimeFormatter.BASIC_ISO_DATE;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -332,6 +338,57 @@ public class TestBigQueryConnectorTest
     }
 
     @Test
+    public void testPartitionDateColumn()
+    {
+        String tableName = "test.partition_date_column" + randomTableSuffix();
+        try {
+            onBigQuery(format("CREATE TABLE %s (value INT64) PARTITION BY _PARTITIONDATE", tableName));
+            onBigQuery(format("INSERT INTO %s VALUES (value) VALUES (1)", tableName)); // BigQuery doesn't allow omitting column list for ingestion-time partitioned table
+
+            assertQuery("SELECT \"$partition_date\" FROM " + tableName, format("VALUES '%s'", BASIC_ISO_DATE.format(Instant.now())));
+            assertThat(computeScalar("SELECT \"$partition_date\" FROM " + tableName))
+                    .isEqualTo(computeScalarOnBigQuery("SELECT _PARTITIONDATE AS pt FROM " + tableName).getStringValue());
+
+            assertQuery(format("SELECT value FROM %s WHERE \"$partition_date\" = '%s'", tableName, BASIC_ISO_DATE.format(Instant.now())), "VALUES 1");
+
+            assertThat(query("DESCRIBE " + tableName)).projected(0).matches("VALUES \"value\"");
+        }
+        catch (Exception e) {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testPartitionTimeColumn()
+    {
+        String tableName = "test.partition_hour_column" + randomTableSuffix();
+        try {
+            onBigQuery(format("CREATE TABLE %s (value INT64) PARTITION BY DATE_TRUNC(_PARTITIONTIME, HOUR)", tableName));
+            onBigQuery(format("INSERT INTO %s VALUES (value) VALUES (1)", tableName)); // BigQuery doesn't allow omitting column list for ingestion-time partitioned table
+
+            assertQuery("SELECT \"$partition_time\" FROM " + tableName, format("VALUES '%s'", BASIC_ISO_DATE.format(Instant.now())));
+            assertThat(computeScalar("SELECT \"$partition_time\" FROM " + tableName))
+                    .isEqualTo(computeScalarOnBigQuery("SELECT _PARTITIONTIME AS pt FROM " + tableName).getStringValue());
+
+            assertQuery(format("SELECT value FROM %s WHERE \"partition_time\" = '%s'", tableName, BASIC_ISO_DATE.format(Instant.now())), "VALUES 1");
+
+            assertThat(query("DESCRIBE " + tableName)).projected(0).matches("VALUES \"value\"");
+        }
+        catch (Exception e) {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testPseudoColumnNotExist()
+    {
+        try (TestTable table = new TestTable(bigQuerySqlExecutor, "test.pseudo_column_not_found", "(value INT64, ts TIMESTAMP)")) {
+            assertThatThrownBy(() -> query("SELECT \"$partition_time\" FROM " + table.getName()))
+                    .hasMessageContaining("The following selected fields do not exist in the table schema: _PARTITIONTIME");
+        }
+    }
+
+    @Test
     public void testSelectFromHourlyPartitionedTable()
     {
         try (TestTable table = new TestTable(
@@ -543,5 +600,12 @@ public class TestBigQueryConnectorTest
     private void onBigQuery(String sql)
     {
         bigQuerySqlExecutor.execute(sql);
+    }
+
+    private FieldValue computeScalarOnBigQuery(String bigqueryQuery)
+    {
+        TableResult result = bigQuerySqlExecutor.executeQuery(bigqueryQuery);
+        verify(result.getTotalRows() == 1, "Expected 1 row but got %s", result.getTotalRows());
+        return getOnlyElement(result.getValues()).get(0);
     }
 }

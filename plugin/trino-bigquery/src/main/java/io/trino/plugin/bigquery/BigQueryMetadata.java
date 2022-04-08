@@ -72,6 +72,8 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_LISTING_DATASET_ERROR;
+import static io.trino.plugin.bigquery.BigQueryPseudoColumn.PARTITION_DATE;
+import static io.trino.plugin.bigquery.BigQueryPseudoColumn.PARTITION_TIME;
 import static io.trino.plugin.bigquery.BigQueryType.toField;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -247,6 +249,8 @@ public class BigQueryMetadata
         for (BigQueryColumnHandle column : client.getColumns(handle)) {
             columnMetadata.add(column.getColumnMetadata());
         }
+        columnMetadata.add(PARTITION_DATE.getColumnMetadata());
+        columnMetadata.add(PARTITION_TIME.getColumnMetadata());
         return new ConnectorTableMetadata(handle.getSchemaTableName(), columnMetadata.build());
     }
 
@@ -290,7 +294,12 @@ public class BigQueryMetadata
     {
         BigQueryClient client = bigQueryClientFactory.create(session);
         log.debug("getColumnHandles(session=%s, tableHandle=%s)", session, tableHandle);
-        return client.getColumns((BigQueryTableHandle) tableHandle).stream()
+
+        ImmutableList.Builder<BigQueryColumnHandle> columns = ImmutableList.builder();
+        columns.addAll(client.getColumns((BigQueryTableHandle) tableHandle));
+        columns.add(PARTITION_DATE.getColumnHandle());
+        columns.add(PARTITION_TIME.getColumnHandle());
+        return columns.build().stream()
                 .collect(toImmutableMap(columnHandle -> columnHandle.getColumnMetadata().getName(), identity()));
     }
 
